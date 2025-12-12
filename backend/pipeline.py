@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections import deque
 from typing import List, Optional
 
 import numpy as np
@@ -107,6 +108,93 @@ class RollingBuffer:
         return self._buffer.copy()
 
 
+class PeakTracker:
+    def __init__(self, window_seconds: float, buffer_size: int, channels: int):
+        self.window_seconds = max(0.1, window_seconds)
+        self.buffer_size = max(1, buffer_size)
+        self.channels = max(1, channels)
+        self._history: list[deque[tuple[float, float]]] = [
+            deque() for _ in range(self.channels)
+        ]
+        self._buffers: list[deque[float]] = [
+            deque(maxlen=self.buffer_size) for _ in range(self.channels)
+        ]
+
+    def resize(
+        self,
+        channels: int,
+        window_seconds: Optional[float] = None,
+        buffer_size: Optional[int] = None,
+    ) -> None:
+        if window_seconds is not None:
+            self.window_seconds = max(0.1, window_seconds)
+        if buffer_size is not None and int(buffer_size) != self.buffer_size:
+            self.buffer_size = max(1, int(buffer_size))
+            self._buffers = [
+                deque(list(buf)[-self.buffer_size :], maxlen=self.buffer_size)
+                for buf in self._buffers
+            ]
+        if channels != self.channels:
+            new_history: list[deque[tuple[float, float]]] = []
+            new_buffers: list[deque[float]] = []
+            for idx in range(channels):
+                if idx < len(self._history):
+                    new_history.append(self._history[idx])
+                else:
+                    new_history.append(deque())
+                if idx < len(self._buffers):
+                    new_buffers.append(
+                        deque(list(self._buffers[idx])[-self.buffer_size :], maxlen=self.buffer_size)
+                    )
+                else:
+                    new_buffers.append(deque(maxlen=self.buffer_size))
+            self._history = new_history
+            self._buffers = new_buffers
+            self.channels = channels
+        self._trim_history(time.time())
+
+    def update(self, freq: np.ndarray, spectrum: np.ndarray, timestamp: float) -> dict:
+        has_spectrum = freq.size > 0 and spectrum.size > 0
+        if has_spectrum:
+            total_channels = min(self.channels, spectrum.shape[1])
+            for channel in range(total_channels):
+                magnitudes = spectrum[:, channel]
+                if magnitudes.size == 0:
+                    continue
+                peak_index = int(np.argmax(magnitudes))
+                if peak_index < 0 or peak_index >= len(freq):
+                    continue
+                peak_freq = float(freq[peak_index])
+                if not np.isfinite(peak_freq) or peak_freq <= 0:
+                    continue
+                self._buffers[channel].append(peak_freq)
+                median_freq = float(np.median(self._buffers[channel]))
+                self._history[channel].append((timestamp, median_freq))
+        self._trim_history(timestamp)
+        return self.serialize()
+
+    def serialize(self) -> dict:
+        series = []
+        for idx in range(self.channels):
+            history = self._history[idx] if idx < len(self._history) else deque()
+            timestamps = [point[0] for point in history]
+            freqs = [point[1] for point in history]
+            series.append(
+                {
+                    "channel": idx,
+                    "timestamps": timestamps,
+                    "frequencies": freqs,
+                }
+            )
+        return {"channels": self.channels, "series": series}
+
+    def _trim_history(self, current_time: float) -> None:
+        cutoff = current_time - self.window_seconds
+        for history in self._history:
+            while history and history[0][0] < cutoff:
+                history.popleft()
+
+
 WINDOW_MAP = {
     "hann": np.hanning,
     "hamming": np.hamming,
@@ -200,6 +288,11 @@ class AudioBroadcaster:
         self.settings = settings
         self.buffer = RollingBuffer(settings.time_window_samples, settings.stream.channels)
         self.fft_processor = FftProcessor(settings)
+        self.peak_tracker = PeakTracker(
+            settings.peak_plot_window_seconds,
+            settings.peak_buffer_size,
+            settings.stream.channels,
+        )
         self.hub = BroadcastHub()
         self.refresh_interval = settings.refresh_interval_seconds
         self._ingest_task: Optional[asyncio.Task] = None
@@ -229,6 +322,11 @@ class AudioBroadcaster:
         self.settings = settings
         self.buffer.resize(settings.time_window_samples, settings.stream.channels)
         self.fft_processor.update(settings)
+        self.peak_tracker.resize(
+            settings.stream.channels,
+            window_seconds=settings.peak_plot_window_seconds,
+            buffer_size=settings.peak_buffer_size,
+        )
         self.refresh_interval = settings.refresh_interval_seconds
 
     async def stream(self):
@@ -259,10 +357,12 @@ class AudioBroadcaster:
 
     async def _publish_snapshot(self) -> None:
         samples = self.buffer.snapshot()
+        timestamp = time.time()
         freq, spectrum = self.fft_processor.process(samples)
         latest = downsample(samples, self.settings.signal_point_limit)
+        peak_plot = self.peak_tracker.update(freq, spectrum, timestamp)
         message = {
-            "timestamp": time.time(),
+            "timestamp": timestamp,
             "signal": {
                 "channels": samples.shape[1] if samples.size else self.settings.stream.channels,
                 "sampleRate": self.settings.stream.sample_rate,
@@ -272,5 +372,6 @@ class AudioBroadcaster:
                 "frequency": freq.tolist(),
                 "magnitude": spectrum.tolist(),
             },
+            "peak_plot": peak_plot,
         }
         await self.hub.publish(message)

@@ -14,6 +14,9 @@ const signalLineWidthInput = document.getElementById('signalLineWidth');
 const signalMarkerSizeInput = document.getElementById('signalMarkerSize');
 const fftLineWidthInput = document.getElementById('fftLineWidth');
 const fftMarkerSizeInput = document.getElementById('fftMarkerSize');
+const peakPlotWindowInput = document.getElementById('peakPlotWindow');
+const peakBufferSizeInput = document.getElementById('peakBufferSize');
+const peakCanvas = document.getElementById('peakCanvas');
 
 let selectedChannels = new Set(['Channel 1']);
 let liveChannelCount = Number(channelsInput.value) || 1;
@@ -22,6 +25,8 @@ let reconnectTimer;
 let latestSignal = null;
 let latestFft = null;
 let hasHydrated = false;
+let latestPeakPlot = null;
+let latestFrameTimestamp = Date.now();
 const PLOT_BOTTOM_PADDING = 50;
 const CHANNEL_COLORS = ['#38bdf8', '#a78bfa', '#34d399', '#f97316', '#f472b6', '#facc15', '#f87171', '#0ea5e9'];
 const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
@@ -105,6 +110,8 @@ signalLineWidthInput.addEventListener('input', refreshPlots);
 signalMarkerSizeInput.addEventListener('input', refreshPlots);
 fftLineWidthInput.addEventListener('input', refreshPlots);
 fftMarkerSizeInput.addEventListener('input', refreshPlots);
+peakPlotWindowInput.addEventListener('input', refreshPlots);
+peakBufferSizeInput.addEventListener('input', refreshPlots);
 
 if (vocalHelp) {
   const toggleHelp = () => {
@@ -177,6 +184,8 @@ function collectFormData() {
       signal_marker_size: Number(signalMarkerSizeInput.value),
       fft_line_width: Number(fftLineWidthInput.value),
       fft_marker_size: Number(fftMarkerSizeInput.value),
+      peak_plot_window_ms: Number(peakPlotWindowInput.value),
+      peak_buffer_size: Number(peakBufferSizeInput.value),
     },
     visualizationChannels: Array.from(selectedChannels),
   };
@@ -343,6 +352,112 @@ function drawFrequencyAxis(ctx, width, height, range) {
   ctx.fillText('Frequency (Hz)', width / 2 - 45, axisY + 34);
 }
 
+function drawPeakPlot(ctx, width, height, peakData) {
+  const usableHeight = height - PLOT_BOTTOM_PADDING;
+  const indices = getSelectedChannelIndices(liveChannelCount);
+  const durationMs = Math.max(200, Number(peakPlotWindowInput.value) || 5000);
+  const minFreq = Number(minFreqInput.value) || 0;
+  const maxFreq = Number(maxFreqInput.value) || 20000;
+  const freqRange = Math.max(maxFreq - minFreq, 1);
+  const latestTs = latestFrameTimestamp || Date.now();
+  const windowStart = latestTs - durationMs;
+  const series = peakData && Array.isArray(peakData.series) ? peakData.series : [];
+  const lineWidth = Number(fftLineWidthInput.value) || 1.2;
+  let renderedPoints = 0;
+  indices.forEach((channelIdx) => {
+    const channelSeries = series.find((entry) => entry.channel === channelIdx);
+    if (!channelSeries) return;
+    const timestamps = Array.isArray(channelSeries.timestamps) ? channelSeries.timestamps : [];
+    const freqs = Array.isArray(channelSeries.frequencies) ? channelSeries.frequencies : [];
+    if (!timestamps.length || !freqs.length) return;
+    ctx.beginPath();
+    ctx.lineWidth = lineWidth;
+    ctx.strokeStyle = CHANNEL_COLORS[channelIdx % CHANNEL_COLORS.length];
+    let hasPoint = false;
+    for (let i = 0; i < timestamps.length; i += 1) {
+      const timestampMs = timestamps[i] * 1000;
+      const ageRatio = (timestampMs - windowStart) / durationMs;
+      if (ageRatio < 0 || ageRatio > 1) continue;
+      const freq = freqs[i];
+      const normalizedFreq = (freq - minFreq) / freqRange;
+      const clampedFreq = Math.max(0, Math.min(1, normalizedFreq));
+      const x = 20 + ageRatio * (width - 30);
+      const y = usableHeight - clampedFreq * (usableHeight * 0.95);
+      if (!hasPoint) {
+        ctx.moveTo(x, y);
+        hasPoint = true;
+      } else {
+        ctx.lineTo(x, y);
+      }
+      renderedPoints += 1;
+    }
+    if (hasPoint) {
+      ctx.stroke();
+    }
+  });
+  drawPeakTimeAxis(ctx, width, height, durationMs);
+  drawPeakFrequencyGuide(ctx, width, height, minFreq, maxFreq);
+  const countEl = document.getElementById('peakPlotPointCount');
+  if (countEl) {
+    countEl.textContent = renderedPoints;
+  }
+}
+
+function drawPeakTimeAxis(ctx, width, height, durationMs) {
+  const axisY = height - PLOT_BOTTOM_PADDING + 12;
+  const axisWidth = width - 30;
+  ctx.strokeStyle = '#475569';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(20, axisY);
+  ctx.lineTo(width - 10, axisY);
+  ctx.stroke();
+  ctx.fillStyle = '#cbd5f5';
+  ctx.font = `${12 * (window.devicePixelRatio || 1)}px 'Segoe UI', sans-serif`;
+  const ticks = 4;
+  for (let i = 0; i <= ticks; i += 1) {
+    const ratio = i / ticks;
+    const x = 20 + ratio * axisWidth;
+    const age = (1 - ratio) * durationMs;
+    const label = age >= 1000 ? `-${(age / 1000).toFixed(1)} s` : `-${Math.round(age)} ms`;
+    ctx.beginPath();
+    ctx.moveTo(x, axisY - 4);
+    ctx.lineTo(x, axisY + 4);
+    ctx.stroke();
+    ctx.fillText(label, x - 20, axisY + 18);
+  }
+  ctx.fillText('Time history (ago)', width / 2 - 65, axisY + 34);
+}
+
+function drawPeakFrequencyGuide(ctx, width, height, minFreq, maxFreq) {
+  const topPadding = 12;
+  const usableHeight = height - PLOT_BOTTOM_PADDING;
+  ctx.strokeStyle = '#475569';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(20, topPadding);
+  ctx.lineTo(20, usableHeight);
+  ctx.stroke();
+  ctx.fillStyle = '#cbd5f5';
+  ctx.font = `${12 * (window.devicePixelRatio || 1)}px 'Segoe UI', sans-serif`;
+  const ticks = 4;
+  for (let i = 0; i <= ticks; i += 1) {
+    const ratio = i / ticks;
+    const freq = minFreq + (1 - ratio) * (maxFreq - minFreq);
+    const y = topPadding + ratio * (usableHeight - topPadding);
+    ctx.beginPath();
+    ctx.moveTo(16, y);
+    ctx.lineTo(24, y);
+    ctx.stroke();
+    ctx.fillText(formatFrequency(freq), 28, y + 4);
+  }
+  ctx.save();
+  ctx.translate(8, usableHeight / 2);
+  ctx.rotate(-Math.PI / 2);
+  ctx.fillText('Frequency (Hz)', 0, 0);
+  ctx.restore();
+}
+
 function formatFrequency(freq) {
   if (freq >= 1000) {
     return `${(freq / 1000).toFixed(1)} kHz`;
@@ -356,6 +471,11 @@ function renderSignal(signal) {
 
 function renderFft(fft, channels) {
   drawPlaceholder(fftCanvas, (ctx, width, height) => drawFftPlot(ctx, width, height, fft, channels));
+}
+
+function renderPeakPlot(peakData) {
+  if (!peakCanvas) return;
+  drawPlaceholder(peakCanvas, (ctx, width, height) => drawPeakPlot(ctx, width, height, peakData));
 }
 
 function refreshPlots() {
@@ -374,6 +494,11 @@ function refreshPlots() {
   } else {
     renderFft({ frequency: [], magnitude: [] }, liveChannelCount);
   }
+  if (latestPeakPlot) {
+    renderPeakPlot(latestPeakPlot);
+  } else {
+    renderPeakPlot({ series: [] });
+  }
 }
 
 function getSelectedChannelIndices(total) {
@@ -390,6 +515,8 @@ function getSelectedChannelIndices(total) {
 function handleFrame(frame) {
   latestSignal = frame.signal;
   latestFft = frame.fft;
+  latestPeakPlot = frame.peak_plot || null;
+  latestFrameTimestamp = frame.timestamp ? frame.timestamp * 1000 : Date.now();
   refreshPlots();
 }
 
@@ -452,6 +579,8 @@ function applyConfigToInputs(data) {
   signalMarkerSizeInput.value = vizConfig.signal_marker_size ?? 0;
   fftLineWidthInput.value = vizConfig.fft_line_width ?? 1.2;
   fftMarkerSizeInput.value = vizConfig.fft_marker_size ?? 0;
+  peakPlotWindowInput.value = vizConfig.peak_plot_window_ms ?? 5000;
+  peakBufferSizeInput.value = vizConfig.peak_buffer_size ?? 5;
   document.getElementById('sampleRate').value = streamConfig.sample_rate ?? 44100;
   document.getElementById('channels').value = streamConfig.channels ?? 1;
   document.getElementById('sampleWidth').value = streamConfig.sample_width ?? 2;

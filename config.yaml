@@ -21,3 +21,5 @@ visualization:
   signal_marker_size: 0.0  # Audio signal marker radius (0 hides markers)
   fft_line_width: 0.8  # Spectrum line width
   fft_marker_size: 1.5  # Spectrum marker radius (0 hides markers)
+  peak_plot_window_ms: 6000  # Overall time window for plotting peak frequency trace vs time
+  peak_buffer_size: 7  # Number of buffered peak frequency values for extracting median and plotting trace vs time

@@ -40,6 +40,8 @@ class VisualizationConfig:
     signal_marker_size: float
     fft_line_width: float
     fft_marker_size: float
+    peak_plot_window_ms: int
+    peak_buffer_size: int
 
 
 @dataclass
@@ -60,6 +62,14 @@ class Settings:
     @property
     def signal_point_limit(self) -> int:
         return max(100, self.visualization.max_signal_points)
+
+    @property
+    def peak_plot_window_seconds(self) -> float:
+        return max(0.1, self.visualization.peak_plot_window_ms / 1000.0)
+
+    @property
+    def peak_buffer_size(self) -> int:
+        return max(1, self.visualization.peak_buffer_size)
 
     def merge(self, payload: Dict[str, Any]) -> "Settings":
         data = self.to_dict()
@@ -99,6 +109,8 @@ class Settings:
                 "signal_marker_size": self.visualization.signal_marker_size,
                 "fft_line_width": self.visualization.fft_line_width,
                 "fft_marker_size": self.visualization.fft_marker_size,
+                "peak_plot_window_ms": self.visualization.peak_plot_window_ms,
+                "peak_buffer_size": self.visualization.peak_buffer_size,
             },
         }
 
@@ -135,6 +147,8 @@ class Settings:
                 signal_marker_size=float(visualization.get("signal_marker_size", 0.0)),
                 fft_line_width=float(visualization.get("fft_line_width", 1.2)),
                 fft_marker_size=float(visualization.get("fft_marker_size", 0.0)),
+                peak_plot_window_ms=int(visualization.get("peak_plot_window_ms", 5000)),
+                peak_buffer_size=int(visualization.get("peak_buffer_size", 5)),
             ),
         )
 
