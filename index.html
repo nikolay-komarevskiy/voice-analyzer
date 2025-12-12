@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Voice Analyzer Dashboard</title>
+  <link rel="stylesheet" href="styles.css" />
+  <link rel="icon" type="image/x-icon" href="/favicon.ico" />
+</head>
+<body>
+  <header class="app-header">
+    <div>
+      <h1>Voice Analyzer</h1>
+    </div>
+    <button id="applyBtn" class="primary-btn" title="Send the updated configuration to the backend and refresh both figures">Apply &amp; Sync</button>
+  </header>
+
+  <main class="layout">
+    <section class="control-panel">
+      <h2>Backend + Stream</h2>
+      <div class="field-group">
+        <label for="backendSelect" title="Pick the Python audio streaming backend that the server will use.">Backend Library</label>
+        <select id="backendSelect">
+          <option value="pyaudio">PyAudio</option>
+          <option value="sounddevice">sounddevice</option>
+          <option value="synthetic">Synthetic (test tone)</option>
+        </select>
+      </div>
+
+      <div class="field-group">
+        <label for="timeWindow" title="Duration (in milliseconds) of the rolling window shown in Figure 1 and used for FFT.">Time Window (ms)</label>
+        <input type="number" id="timeWindow" min="50" max="5000" step="50" value="1000" />
+        <small class="helper-text">Min resolution: <span id="timeWindowResolution">--</span></small>
+      </div>
+      <div class="field-group">
+        <label for="refreshInterval" title="How often (in milliseconds) the backend pushes signal + FFT data to the UI.">Refresh Interval (ms)</label>
+        <input type="number" id="refreshInterval" min="10" max="1000" step="10" value="50" />
+      </div>
+      <div class="field-group">
+        <label for="signalPointLimit" title="Display-only cap on time-domain samples sent per update; does not affect capture.">Max Signal Points (display)</label>
+        <input type="number" id="signalPointLimit" min="200" max="20000" step="100" value="2000" />
+      </div>
+
+      <h2>Figure 1 · Time Signal</h2>
+      <div class="field-grid">
+        <div class="field-group">
+          <label for="sampleRate" title="Number of samples per second captured from the stream.">Sample Rate (Hz)</label>
+          <input type="number" id="sampleRate" value="44100" min="8000" max="192000" step="100" />
+        </div>
+        <div class="field-group">
+          <label for="channels" title="Total number of channels requested from the backend stream (e.g., 1 for mono, 2 for stereo).">Channels</label>
+          <input type="number" id="channels" value="2" min="1" max="8" />
+        </div>
+        <div class="field-group">
+          <label for="sampleWidth" title="Sample width in bytes; defines bit depth of each sample (1=8-bit, 2=16-bit, etc).">Sample Width (bytes)</label>
+          <input type="number" id="sampleWidth" value="2" min="1" max="4" />
+        </div>
+        <div class="field-group">
+          <label for="framesPerChunk" title="Number of frames pulled from the backend per chunk; also influences the update cadence.">Frames per Chunk</label>
+          <input type="number" id="framesPerChunk" value="1024" min="64" max="8192" step="64" />
+        </div>
+        <div class="field-group">
+          <label for="inputDevice" title="Optional device index or name passed to the backend.">Input Device</label>
+          <input type="text" id="inputDevice" placeholder="default" />
+        </div>
+        <div class="field-group">
+          <label for="preampGain" title="Gain applied by backend before visualization; use 1.0 for unity gain.">Preamp Gain</label>
+          <input type="number" id="preampGain" value="1.0" step="0.1" min="0.1" max="4" />
+        </div>
+      </div>
+
+      <h2>Figure 2 · FFT</h2>
+      <div class="field-grid">
+        <div class="field-group">
+          <label for="signalLineWidth" title="Line width (px) used to draw each selected channel in the time signal.">Line Width</label>
+          <input type="number" id="signalLineWidth" value="1.5" min="0.5" max="5" step="0.1" />
+        </div>
+        <div class="field-group">
+          <label for="signalMarkerSize" title="Marker size (px) for time signal sample points; set to 0 to hide.">Marker Size</label>
+          <input type="number" id="signalMarkerSize" value="0" min="0" max="10" step="0.5" />
+        </div>
+        <div class="field-group">
+          <label for="fftSize" title="Number of samples used per FFT; larger values increase resolution but add latency.">FFT Size</label>
+          <input type="number" id="fftSize" value="2048" min="256" max="16384" step="256" />
+        </div>
+        <div class="field-group">
+          <label for="windowType" title="Spectral window applied before FFT to reduce leakage.">Window Function</label>
+          <select id="windowType">
+            <option value="hann">Hann</option>
+            <option value="hamming">Hamming</option>
+            <option value="blackman">Blackman</option>
+            <option value="rect">Rectangular</option>
+          </select>
+        </div>
+        <div class="field-group">
+          <label for="minFreq" title="Lower bound of the displayed frequency axis.">Min Frequency (Hz)</label>
+          <input type="number" id="minFreq" value="20" min="0" max="1000" />
+        </div>
+        <div class="field-group">
+          <label for="maxFreq" title="Upper bound of the displayed frequency axis.">Max Frequency (Hz)</label>
+          <input type="number" id="maxFreq" value="20000" min="1000" max="48000" />
+        </div>
+        <div class="field-group">
+          <label for="smoothing" title="Exponential average across FFT updates; higher values blend more frames and calm temporal oscillations.">FFT Smoothing</label>
+          <input type="number" id="smoothing" value="0" min="0" max="0.9" step="0.1" />
+        </div>
+        <div class="field-group">
+          <label for="fftLineWidth" title="Line width (px) used to draw FFT spectra per channel.">FFT Line Width</label>
+          <input type="number" id="fftLineWidth" value="1.2" min="0.5" max="5" step="0.1" />
+        </div>
+        <div class="field-group">
+          <label for="fftMarkerSize" title="Marker size (px) for FFT spectrum points; set to 0 to hide.">FFT Marker Size</label>
+          <input type="number" id="fftMarkerSize" value="0" min="0" max="10" step="0.5" />
+        </div>
+      </div>
+
+      <h2>Channel Visualization</h2>
+      <div class="field-group" title="Pick which channels to draw in Figure 1 and Figure 2.">
+        <label for="channelSelect">Channels to Display</label>
+        <div id="channelSelect" class="channel-checkboxes"></div>
+      </div>
+    </section>
+
+    <section class="figures">
+      <figure class="plot" aria-label="Time domain plot area">
+        <figcaption>Figure 1 · Time Signal</figcaption>
+        <canvas id="signalCanvas"></canvas>
+        <div class="plot-meta">Points: <span id="signalPointCount">0</span></div>
+      </figure>
+      <figure class="plot" aria-label="FFT plot area">
+        <figcaption>Figure 2 · FFT Spectrum</figcaption>
+        <div class="fft-peak-info" id="fftPeakInfo">Peak: --</div>
+        <div class="vocal-help" id="vocalHelp" tabindex="0" role="note" aria-describedby="vocalHelpText">
+          <img
+            class="vocal-help__icon"
+            src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='64' height='64' viewBox='0 0 64 64'%3E%3Cdefs%3E%3ClinearGradient id='sing-grad' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0%25' stop-color='%23f472b6'/%3E%3Cstop offset='100%25' stop-color='%238b5cf6'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='64' height='64' rx='14' fill='%230b1120'/%3E%3Cpath d='M20 40c4-2 8 2 12 2s8-4 12-2' stroke='%2338bdf8' stroke-width='2.5' stroke-linecap='round' fill='none'/%3E%3Cpath d='M44 18v12c0 4-3 7-7 7s-7-3-7-7V16c0-2 2-4 4-4h5a5 5 0 0 1 5 5z' fill='url(%23sing-grad)'/%3E%3Cpath d='M30 48c0 3 2 6 6 6s6-3 6-6z' fill='%2338bdf8' opacity='0.8'/%3E%3Cpath d='M17 22c3-3 7-4 11-3' stroke='%23fbbf24' stroke-width='2' stroke-linecap='round' fill='none'/%3E%3Cpath d='M17 28c2-2 5-3 8-2' stroke='%23fbbf24' stroke-width='2' stroke-linecap='round' fill='none'/%3E%3C/svg%3E"
+            alt="Stylized singing icon with microphone and vocal curves"
+          />
+          <div class="vocal-help__label">Vocal resonance tip</div>
+          <div class="vocal-help__tooltip" id="vocalHelpText">
+            Professional operatic singing voices show resonant frequencies around 2–4&nbsp;kHz. Aim for steady peaks in that frequency range.
+          </div>
+        </div>
+        <canvas id="fftCanvas"></canvas>
+        <div class="plot-meta">Points: <span id="fftPointCount">0</span></div>
+      </figure>
+    </section>
+  </main>
+
+  <div id="status" class="status-bar" aria-live="polite"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>

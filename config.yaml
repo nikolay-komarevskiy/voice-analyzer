@@ -1,0 +1,23 @@
+app:
+  backend: pyaudio  # Audio backend streaming library to use: "pyaudio", "sounddevice", "synthetic"
+  refresh_interval_ms: 30  # Periodicity of data pushes to frontend in milliseconds (curves are pushed in one iteration not a deltas)
+stream:
+  sample_rate: 44100  # Audio samples in Hz from the mic device. Common values: 16 kHz, 44.1 kHz, 48 kHz
+  channels: 1  # Number of channels to capture (1 = mono, 2 = stereo)
+  sample_width: 2  # Bytes per audio sample: 1 byte, 2 bytes
+  frames_per_chunk: 1024  # Frames pulled from the audio library per callback
+  input_device: null  # Optional device index (in case of multiple mics) or name (null = default)
+  preamp_gain: 1.0  # Linear gain applied before processing (1.0 = unity)
+fft:
+  time_window_ms: 200  # Time window with accumulated signal used for FFT computation
+  size: 8192  # FFT size in samples (prefer powers of two like 2048/4096/8192/16384)
+  window_func: rect  # Window applied before FFT (hann, hamming, blackman, rect)
+  min_frequency: 20  # Lowest displayed frequency in Hertz
+  max_frequency: 4000  # Highest displayed frequency in Hertz
+  smoothing: 0.0  # Exponential moving average across FFT frames (0 = raw, > 0 adds smoothing over time frames)
+visualization:
+  max_signal_points: 500  # Maximum audio signal samples pushed to the UI per frame
+  signal_line_width: 0.8  # Audio signal line width
+  signal_marker_size: 0.0  # Audio signal marker radius (0 hides markers)
+  fft_line_width: 0.8  # Spectrum line width
+  fft_marker_size: 1.5  # Spectrum marker radius (0 hides markers)

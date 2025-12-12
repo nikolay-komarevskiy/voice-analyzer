@@ -1,0 +1,6 @@
+fastapi
+uvicorn[standard]
+pyyaml
+numpy
+pyaudio; platform_system != "Linux" or platform_system == "Linux"
+sounddevice
