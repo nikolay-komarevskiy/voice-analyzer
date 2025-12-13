@@ -176,7 +176,8 @@ class SyntheticBackend(AudioBackend):
             chord = np.sin(2 * np.pi * (freqs * t + phase))
             mono = 0.2 * np.mean(chord, axis=1, keepdims=True)
             signal = np.tile(mono, (1, self.config.channels))
-            self._phase = (self._phase + frames / self.config.sample_rate) % 1.0
+            phase_increment = (frames / self.config.sample_rate) * self.CHORD_FREQUENCIES
+            self._phase = (self._phase + phase_increment) % 1.0
             if self._callback:
                 self._callback(signal.astype(np.float32))
             time.sleep(interval)

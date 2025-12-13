@@ -158,13 +158,19 @@ class PeakTracker:
         if has_spectrum:
             total_channels = min(self.channels, spectrum.shape[1])
             for channel in range(total_channels):
-                magnitudes = spectrum[:, channel]
+                channel_spectrum = spectrum[:, channel]
+                magnitudes = np.abs(channel_spectrum)
                 if magnitudes.size == 0:
                     continue
                 peak_index = int(np.argmax(magnitudes))
                 if peak_index < 0 or peak_index >= len(freq):
                     continue
                 peak_freq = float(freq[peak_index])
+                refined_freq = _interpolate_peak_frequency(
+                    freq, channel_spectrum, peak_index
+                )
+                if refined_freq is not None:
+                    peak_freq = refined_freq
                 if not np.isfinite(peak_freq) or peak_freq <= 0:
                     continue
                 self._buffers[channel].append(peak_freq)
@@ -204,35 +210,61 @@ WINDOW_MAP = {
 }
 
 
+def _interpolate_peak_frequency(
+    freq: np.ndarray, spectrum: np.ndarray, peak_index: int
+) -> Optional[float]:
+    if (
+        peak_index <= 0
+        or peak_index >= len(spectrum) - 1
+        or len(freq) < 2
+    ):
+        return None
+    left = np.abs(spectrum[peak_index - 1]) ** 2
+    center = np.abs(spectrum[peak_index]) ** 2
+    right = np.abs(spectrum[peak_index + 1]) ** 2
+    denominator = (left - 2 * center + right)
+    if denominator == 0:
+        return None
+    offset = 0.5 * (left - right) / denominator
+    offset = float(np.clip(offset, -1.0, 1.0))
+    left_spacing = freq[peak_index] - freq[peak_index - 1]
+    right_spacing = freq[peak_index + 1] - freq[peak_index]
+    bin_width = 0.5 * (left_spacing + right_spacing)
+    refined = freq[peak_index] + offset * bin_width
+    if not np.isfinite(refined):
+        return None
+    return float(refined)
+
+
 class FftProcessor:
     def __init__(self, settings: Settings):
         self.settings = settings
         self._previous: Optional[np.ndarray] = None  # stores the last spectrum for EMA smoothing
+        self._detection_factor = 4  # zero-padding factor for more precise peak estimation
 
     def update(self, settings: Settings) -> None:
         self.settings = settings
         self._previous = None
 
-    def process(self, samples: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    def process(self, samples: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         if samples.size == 0:
-            return np.array([]), np.array([[]])
+            empty = np.array([])
+            return empty, np.array([[]]), empty, np.array([[]])
         fft_conf = self.settings.fft
         n = min(len(samples), fft_conf.size)
         if n <= 1:
-            return np.array([]), np.array([[]])
+            empty = np.array([])
+            return empty, np.array([[]]), empty, np.array([[]])
         # Select window shape and convert newest samples into a windowed slice.
         window_key = (fft_conf.window_func or "rect").lower()
         window_fn = WINDOW_MAP.get(window_key, np.ones)
         window = window_fn(n)
         sliced = samples[-n:, :]
         windowed = sliced * window[:, None]
-        # Compute positive frequencies only (rfft) to get magnitude per channel.
-        spectrum = np.abs(np.fft.rfft(windowed, axis=0))
-        freq = np.fft.rfftfreq(n, d=1.0 / self.settings.stream.sample_rate)
-        # Limit frequencies to the configured display range.
-        mask = (freq >= fft_conf.min_frequency) & (freq <= fft_conf.max_frequency)
-        freq = freq[mask]
-        spectrum = spectrum[mask, :]
+        freq, spectrum = self._compute_fft(windowed, n)
+        detect_freq, detect_spectrum = self._compute_fft(
+            windowed, self._resolve_detection_size(n), as_magnitude=False
+        )
         smoothing = np.clip(fft_conf.smoothing, 0.0, 0.95)
         if (
             self._previous is not None
@@ -242,7 +274,23 @@ class FftProcessor:
             # Exponential moving average over spectra: only the last frame is retained.
             spectrum = smoothing * self._previous + (1 - smoothing) * spectrum
         self._previous = spectrum
-        return freq, spectrum
+        return freq, spectrum, detect_freq, detect_spectrum
+
+    def _resolve_detection_size(self, base_size: int) -> int:
+        factor = max(1, int(self._detection_factor))
+        padded = base_size * factor
+        return min(max(base_size, padded), 1 << 17)  # cap at 131072 pts for safety
+
+    def _compute_fft(
+        self, windowed: np.ndarray, n_fft: int, as_magnitude: bool = True
+    ) -> tuple[np.ndarray, np.ndarray]:
+        spectrum = np.fft.rfft(windowed, n=n_fft, axis=0)
+        freq = np.fft.rfftfreq(n_fft, d=1.0 / self.settings.stream.sample_rate)
+        mask = (freq >= self.settings.fft.min_frequency) & (freq <= self.settings.fft.max_frequency)
+        spectrum = spectrum[mask, :]
+        if as_magnitude:
+            spectrum = np.abs(spectrum)
+        return freq[mask], spectrum
 
 
 def downsample(data: np.ndarray, max_points: int) -> np.ndarray:
@@ -358,9 +406,9 @@ class AudioBroadcaster:
     async def _publish_snapshot(self) -> None:
         samples = self.buffer.snapshot()
         timestamp = time.time()
-        freq, spectrum = self.fft_processor.process(samples)
+        freq, spectrum, detect_freq, detect_spectrum = self.fft_processor.process(samples)
         latest = downsample(samples, self.settings.signal_point_limit)
-        peak_plot = self.peak_tracker.update(freq, spectrum, timestamp)
+        peak_plot = self.peak_tracker.update(detect_freq, detect_spectrum, timestamp)
         message = {
             "timestamp": timestamp,
             "signal": {
