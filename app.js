@@ -356,29 +356,31 @@ function drawPeakPlot(ctx, width, height, peakData) {
   const usableHeight = height - PLOT_BOTTOM_PADDING;
   const indices = getSelectedChannelIndices(liveChannelCount);
   const durationMs = Math.max(200, Number(peakPlotWindowInput.value) || 5000);
-  const minFreq = Number(minFreqInput.value) || 0;
-  const maxFreq = Number(maxFreqInput.value) || 20000;
-  const freqRange = Math.max(maxFreq - minFreq, 1);
   const latestTs = latestFrameTimestamp || Date.now();
   const windowStart = latestTs - durationMs;
   const series = peakData && Array.isArray(peakData.series) ? peakData.series : [];
   const lineWidth = Number(fftLineWidthInput.value) || 1.2;
+  const fallbackMin = Number(minFreqInput.value) || 0;
+  const fallbackMax = Number(maxFreqInput.value) || 20000;
+  const { filteredSeries, minFreq, maxFreq } = buildPeakSeriesWindow(
+    series,
+    indices,
+    windowStart,
+    durationMs,
+    fallbackMin,
+    fallbackMax,
+  );
+  const freqRange = Math.max(maxFreq - minFreq, 1);
   let renderedPoints = 0;
   indices.forEach((channelIdx) => {
-    const channelSeries = series.find((entry) => entry.channel === channelIdx);
-    if (!channelSeries) return;
-    const timestamps = Array.isArray(channelSeries.timestamps) ? channelSeries.timestamps : [];
-    const freqs = Array.isArray(channelSeries.frequencies) ? channelSeries.frequencies : [];
-    if (!timestamps.length || !freqs.length) return;
+    const channelPoints = filteredSeries.get(channelIdx);
+    if (!channelPoints || !channelPoints.length) return;
     ctx.beginPath();
     ctx.lineWidth = lineWidth;
     ctx.strokeStyle = CHANNEL_COLORS[channelIdx % CHANNEL_COLORS.length];
     let hasPoint = false;
-    for (let i = 0; i < timestamps.length; i += 1) {
-      const timestampMs = timestamps[i] * 1000;
+    channelPoints.forEach(({ timestampMs, freq }) => {
       const ageRatio = (timestampMs - windowStart) / durationMs;
-      if (ageRatio < 0 || ageRatio > 1) continue;
-      const freq = freqs[i];
       const normalizedFreq = (freq - minFreq) / freqRange;
       const clampedFreq = Math.max(0, Math.min(1, normalizedFreq));
       const x = 20 + ageRatio * (width - 30);
@@ -390,10 +392,8 @@ function drawPeakPlot(ctx, width, height, peakData) {
         ctx.lineTo(x, y);
       }
       renderedPoints += 1;
-    }
-    if (hasPoint) {
-      ctx.stroke();
-    }
+    });
+    ctx.stroke();
   });
   drawPeakTimeAxis(ctx, width, height, durationMs);
   drawPeakFrequencyGuide(ctx, width, height, minFreq, maxFreq);
@@ -401,6 +401,45 @@ function drawPeakPlot(ctx, width, height, peakData) {
   if (countEl) {
     countEl.textContent = renderedPoints;
   }
+}
+
+function buildPeakSeriesWindow(series, indices, windowStart, durationMs, fallbackMin, fallbackMax) {
+  const filteredSeries = new Map();
+  let observedMin = Infinity;
+  let observedMax = -Infinity;
+  indices.forEach((channelIdx) => {
+    const channelSeries = series.find((entry) => entry.channel === channelIdx);
+    if (!channelSeries) return;
+    const timestamps = Array.isArray(channelSeries.timestamps) ? channelSeries.timestamps : [];
+    const freqs = Array.isArray(channelSeries.frequencies) ? channelSeries.frequencies : [];
+    if (!timestamps.length || !freqs.length) return;
+    const points = [];
+    for (let i = 0; i < timestamps.length; i += 1) {
+      const timestampMs = timestamps[i] * 1000;
+      const ageRatio = (timestampMs - windowStart) / durationMs;
+      if (ageRatio < 0 || ageRatio > 1) continue;
+      const freq = freqs[i];
+      if (!Number.isFinite(freq)) continue;
+      observedMin = Math.min(observedMin, freq);
+      observedMax = Math.max(observedMax, freq);
+      points.push({ timestampMs, freq });
+    }
+    if (points.length) {
+      filteredSeries.set(channelIdx, points);
+    }
+  });
+  let minFreq = Number.isFinite(observedMin) ? observedMin : fallbackMin;
+  let maxFreq = Number.isFinite(observedMax) ? observedMax : fallbackMax;
+  if (minFreq === maxFreq) {
+    const padding = minFreq > 0 ? minFreq * 0.05 : 5;
+    minFreq = Math.max(0, minFreq - padding);
+    maxFreq += padding;
+  }
+  const span = Math.max(maxFreq - minFreq, 1);
+  const padding = span * 0.05;
+  minFreq = Math.max(0, minFreq - padding);
+  maxFreq += padding;
+  return { filteredSeries, minFreq, maxFreq };
 }
 
 function drawPeakTimeAxis(ctx, width, height, durationMs) {
