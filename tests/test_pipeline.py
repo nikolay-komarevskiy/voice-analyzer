@@ -3,7 +3,7 @@ import unittest
 import numpy as np
 
 from backend.config import Settings
-from backend.pipeline import FftProcessor, PeakTracker
+from backend.pipeline import FftProcessor, SpectrumSurface
 
 
 class FftProcessorTests(unittest.TestCase):
@@ -22,25 +22,30 @@ class FftProcessorTests(unittest.TestCase):
         peak_index = int(np.argmax(spectrum[:, 0]))
         self.assertAlmostEqual(freqs[peak_index], target_freq, places=6)
 
-    def test_peak_tracker_interpolates_between_bins(self):
+    def test_surface_tracker_keeps_recent_spectra(self):
         sample_rate = 44100
-        fft_size = 8192
-        target_freq = 554.365
-        samples = _make_tone(sample_rate, fft_size, target_freq)
+        fft_size = 4096
+        samples = _make_tone(sample_rate, fft_size, 440.0)
 
         settings = _build_settings(sample_rate, fft_size)
         processor = FftProcessor(settings)
-        tracker = PeakTracker(
-            settings.peak_plot_window_seconds,
-            settings.peak_buffer_size,
-            settings.stream.channels,
+        tracker = SpectrumSurface(
+            window_seconds=0.5,
+            channels=settings.stream.channels,
+            freq_point_limit=settings.surface_freq_bins,
         )
 
-        _, _, detect_freq, detect_spectrum = processor.process(samples)
-        peak_payload = tracker.update(detect_freq, detect_spectrum, timestamp=0.0)
-        series = peak_payload["series"][0]
-        measured_freq = series["frequencies"][-1]
-        self.assertAlmostEqual(measured_freq, target_freq, places=2)
+        freq, spectrum, _, _ = processor.process(samples)
+        tracker.update(freq, spectrum, timestamp=0.0)
+        tracker.update(freq, spectrum, timestamp=0.25)
+        payload = tracker.update(freq, spectrum, timestamp=1.0)
+
+        self.assertGreater(len(payload["history"]), 0)
+        self.assertTrue(all(entry["timestamp"] >= 0.5 for entry in payload["history"]))
+        first_entry = payload["history"][0]
+        self.assertEqual(len(first_entry["channels"]), settings.stream.channels)
+        self.assertEqual(len(first_entry["channels"][0]), len(payload["frequency"]))
+        self.assertLessEqual(len(payload["frequency"]), settings.surface_freq_bins)
 
 
 def _build_settings(sample_rate: int, fft_size: int) -> Settings:
@@ -70,7 +75,8 @@ def _build_settings(sample_rate: int, fft_size: int) -> Settings:
                 "fft_line_width": 1.2,
                 "fft_marker_size": 0.0,
                 "peak_plot_window_ms": 5000,
-                "peak_buffer_size": 5,
+                "surface_freq_bins": 256,
+                "surface_color_profile": "aurora",
             },
         }
     )

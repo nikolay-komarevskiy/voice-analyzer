@@ -14,9 +14,10 @@ const signalLineWidthInput = document.getElementById('signalLineWidth');
 const signalMarkerSizeInput = document.getElementById('signalMarkerSize');
 const fftLineWidthInput = document.getElementById('fftLineWidth');
 const fftMarkerSizeInput = document.getElementById('fftMarkerSize');
-const peakPlotWindowInput = document.getElementById('peakPlotWindow');
-const peakBufferSizeInput = document.getElementById('peakBufferSize');
-const peakCanvas = document.getElementById('peakCanvas');
+const surfacePlotWindowInput = document.getElementById('surfacePlotWindow');
+const surfaceFreqBinsInput = document.getElementById('surfaceFreqBins');
+const surfaceCanvas = document.getElementById('surfaceCanvas');
+const surfaceColorProfileInput = document.getElementById('surfaceColorProfile');
 
 let selectedChannels = new Set(['Channel 1']);
 let liveChannelCount = Number(channelsInput.value) || 1;
@@ -25,12 +26,40 @@ let reconnectTimer;
 let latestSignal = null;
 let latestFft = null;
 let hasHydrated = false;
-let latestPeakPlot = null;
+let latestSurfacePlot = null;
 let latestFrameTimestamp = Date.now();
 const PLOT_BOTTOM_PADDING = 50;
 const CHANNEL_COLORS = ['#38bdf8', '#a78bfa', '#34d399', '#f97316', '#f472b6', '#facc15', '#f87171', '#0ea5e9'];
 const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
 const vocalHelp = document.getElementById('vocalHelp');
+const DEFAULT_SURFACE_PROFILE = 'aurora';
+const SURFACE_COLOR_PROFILES = {
+  aurora: [
+    { stop: 0, color: [15, 23, 42] },
+    { stop: 0.35, color: [56, 189, 248] },
+    { stop: 1, color: [244, 114, 182] },
+  ],
+  inferno: [
+    { stop: 0, color: [0, 0, 0] },
+    { stop: 0.4, color: [165, 21, 21] },
+    { stop: 0.7, color: [249, 115, 22] },
+    { stop: 1, color: [253, 224, 71] },
+  ],
+  ice: [
+    { stop: 0, color: [5, 0, 37] },
+    { stop: 0.5, color: [6, 182, 212] },
+    { stop: 1, color: [224, 242, 254] },
+  ],
+};
+const CHANNEL_RGB = CHANNEL_COLORS.map((hex) => {
+  const safe = hex.replace('#', '');
+  const value = parseInt(safe, 16);
+  return {
+    r: (value >> 16) & 255,
+    g: (value >> 8) & 255,
+    b: value & 255,
+  };
+});
 
 function updateTimeWindowResolution() {
   if (!timeWindowResolutionLabel) return;
@@ -47,6 +76,44 @@ function updateTimeWindowResolution() {
 function setStatus(message, tone = 'info') {
   statusBar.textContent = message;
   statusBar.dataset.tone = tone;
+}
+
+function channelFill(index, alpha) {
+  const base = CHANNEL_RGB[index % CHANNEL_RGB.length];
+  const clamped = Math.max(0, Math.min(1, alpha));
+  return `rgba(${base.r}, ${base.g}, ${base.b}, ${clamped})`;
+}
+
+function getSurfacePalette() {
+  const key = (surfaceColorProfileInput && surfaceColorProfileInput.value) || DEFAULT_SURFACE_PROFILE;
+  if (SURFACE_COLOR_PROFILES[key]) return { key, stops: SURFACE_COLOR_PROFILES[key] };
+  return { key: DEFAULT_SURFACE_PROFILE, stops: SURFACE_COLOR_PROFILES[DEFAULT_SURFACE_PROFILE] };
+}
+
+function sampleGradientColor(stops, value) {
+  if (!stops || !stops.length) return `rgba(255,255,255,${Math.max(0, Math.min(1, value))})`;
+  const clamped = Math.max(0, Math.min(1, value));
+  if (stops.length === 1) {
+    const [r, g, b] = stops[0].color;
+    return `rgb(${r}, ${g}, ${b})`;
+  }
+  let prev = stops[0];
+  for (let i = 1; i < stops.length; i += 1) {
+    const curr = stops[i];
+    if (clamped <= curr.stop || i === stops.length - 1) {
+      const span = Math.max(1e-6, curr.stop - prev.stop);
+      const localT = Math.max(0, Math.min(1, (clamped - prev.stop) / span));
+      const [pr, pg, pb] = prev.color;
+      const [cr, cg, cb] = curr.color;
+      const r = Math.round(pr + (cr - pr) * localT);
+      const g = Math.round(pg + (cg - pg) * localT);
+      const b = Math.round(pb + (cb - pb) * localT);
+      return `rgb(${r}, ${g}, ${b})`;
+    }
+    prev = curr;
+  }
+  const [r, g, b] = stops[stops.length - 1].color;
+  return `rgb(${r}, ${g}, ${b})`;
 }
 
 function buildChannelTags(totalOverride, autoFill = false) {
@@ -110,8 +177,11 @@ signalLineWidthInput.addEventListener('input', refreshPlots);
 signalMarkerSizeInput.addEventListener('input', refreshPlots);
 fftLineWidthInput.addEventListener('input', refreshPlots);
 fftMarkerSizeInput.addEventListener('input', refreshPlots);
-peakPlotWindowInput.addEventListener('input', refreshPlots);
-peakBufferSizeInput.addEventListener('input', refreshPlots);
+surfacePlotWindowInput.addEventListener('input', refreshPlots);
+surfaceFreqBinsInput.addEventListener('input', refreshPlots);
+if (surfaceColorProfileInput) {
+  surfaceColorProfileInput.addEventListener('input', refreshPlots);
+}
 
 if (vocalHelp) {
   const toggleHelp = () => {
@@ -184,8 +254,9 @@ function collectFormData() {
       signal_marker_size: Number(signalMarkerSizeInput.value),
       fft_line_width: Number(fftLineWidthInput.value),
       fft_marker_size: Number(fftMarkerSizeInput.value),
-      peak_plot_window_ms: Number(peakPlotWindowInput.value),
-      peak_buffer_size: Number(peakBufferSizeInput.value),
+      peak_plot_window_ms: Number(surfacePlotWindowInput.value),
+      surface_freq_bins: Number(surfaceFreqBinsInput.value),
+      surface_color_profile: (surfaceColorProfileInput && surfaceColorProfileInput.value) || DEFAULT_SURFACE_PROFILE,
     },
     visualizationChannels: Array.from(selectedChannels),
   };
@@ -352,97 +423,116 @@ function drawFrequencyAxis(ctx, width, height, range) {
   ctx.fillText('Frequency (Hz)', width / 2 - 45, axisY + 34);
 }
 
-function drawPeakPlot(ctx, width, height, peakData) {
-  const usableHeight = height - PLOT_BOTTOM_PADDING;
-  const indices = getSelectedChannelIndices(liveChannelCount);
-  const durationMs = Math.max(200, Number(peakPlotWindowInput.value) || 5000);
+function drawSurfacePlot(ctx, width, height, surfaceData) {
+  const durationMs = Math.max(200, Number(surfacePlotWindowInput.value) || 5000);
   const latestTs = latestFrameTimestamp || Date.now();
   const windowStart = latestTs - durationMs;
-  const series = peakData && Array.isArray(peakData.series) ? peakData.series : [];
-  const lineWidth = Number(fftLineWidthInput.value) || 1.2;
-  const fallbackMin = Number(minFreqInput.value) || 0;
-  const fallbackMax = Number(maxFreqInput.value) || 20000;
-  const { filteredSeries, minFreq, maxFreq } = buildPeakSeriesWindow(
-    series,
-    indices,
-    windowStart,
-    durationMs,
-    fallbackMin,
-    fallbackMax,
-  );
-  const freqRange = Math.max(maxFreq - minFreq, 1);
-  let renderedPoints = 0;
-  indices.forEach((channelIdx) => {
-    const channelPoints = filteredSeries.get(channelIdx);
-    if (!channelPoints || !channelPoints.length) return;
-    ctx.beginPath();
-    ctx.lineWidth = lineWidth;
-    ctx.strokeStyle = CHANNEL_COLORS[channelIdx % CHANNEL_COLORS.length];
-    let hasPoint = false;
-    channelPoints.forEach(({ timestampMs, freq }) => {
-      const ageRatio = (timestampMs - windowStart) / durationMs;
-      const normalizedFreq = (freq - minFreq) / freqRange;
-      const clampedFreq = Math.max(0, Math.min(1, normalizedFreq));
-      const x = 20 + ageRatio * (width - 30);
-      const y = usableHeight - clampedFreq * (usableHeight * 0.95);
-      if (!hasPoint) {
-        ctx.moveTo(x, y);
-        hasPoint = true;
-      } else {
-        ctx.lineTo(x, y);
-      }
-      renderedPoints += 1;
-    });
-    ctx.stroke();
+  const usableHeight = height - PLOT_BOTTOM_PADDING;
+  const history = normalizeSurfaceHistory(surfaceData, windowStart, latestTs);
+  const freqSpan = Math.max(history.maxFreq - history.minFreq, 1);
+  const axisWidth = width - 30;
+  const axisTop = 12;
+  const axisHeight = usableHeight - axisTop;
+  const columnWidth = history.entries.length
+    ? Math.max(2, axisWidth / (history.entries.length * 1.5))
+    : axisWidth;
+  const palette = getSurfacePalette();
+
+  history.entries.forEach((entry) => {
+    const ageRatio = (entry.timestampMs - windowStart) / durationMs;
+    if (ageRatio < 0 || ageRatio > 1) return;
+    const x = 20 + ageRatio * axisWidth - columnWidth / 2;
+    const magnitudes = collapseChannelMagnitudes(entry.channels);
+    if (!magnitudes.length) return;
+    for (let i = 0; i < magnitudes.length; i += 1) {
+      const value = magnitudes[i];
+      if (!Number.isFinite(value) || value <= 0) continue;
+      const freqValue = history.frequency[i] !== undefined
+        ? history.frequency[i]
+        : history.minFreq + (i / Math.max(1, magnitudes.length - 1)) * freqSpan;
+      if (freqValue < history.minFreq || freqValue > history.maxFreq) continue;
+      const nextFreq = history.frequency[i + 1] !== undefined
+        ? history.frequency[i + 1]
+        : freqValue + freqSpan / Math.max(1, magnitudes.length);
+      const clampedNext = Math.min(history.maxFreq, Math.max(freqValue, nextFreq));
+      const freqRatio = (freqValue - history.minFreq) / freqSpan;
+      const nextRatio = (clampedNext - history.minFreq) / freqSpan;
+      const y = axisTop + (1 - freqRatio) * axisHeight;
+      const nextY = axisTop + (1 - nextRatio) * axisHeight;
+      const rectHeight = Math.max(1, Math.abs(nextY - y));
+      const yTop = Math.min(y, nextY);
+      const normalized = Math.pow(value / history.maxMagnitude, 0.7);
+      ctx.fillStyle = sampleGradientColor(palette.stops, normalized);
+      ctx.fillRect(x, yTop, columnWidth, rectHeight);
+    }
   });
-  drawPeakTimeAxis(ctx, width, height, durationMs);
-  drawPeakFrequencyGuide(ctx, width, height, minFreq, maxFreq);
-  const countEl = document.getElementById('peakPlotPointCount');
+
+  drawSurfaceTimeAxis(ctx, width, height, durationMs);
+  drawSurfaceFrequencyAxis(ctx, width, height, history.minFreq, history.maxFreq);
+  const countEl = document.getElementById('surfaceFrameCount');
   if (countEl) {
-    countEl.textContent = renderedPoints;
+    countEl.textContent = history.entries.length;
   }
 }
 
-function buildPeakSeriesWindow(series, indices, windowStart, durationMs, fallbackMin, fallbackMax) {
-  const filteredSeries = new Map();
-  let observedMin = Infinity;
-  let observedMax = -Infinity;
-  indices.forEach((channelIdx) => {
-    const channelSeries = series.find((entry) => entry.channel === channelIdx);
-    if (!channelSeries) return;
-    const timestamps = Array.isArray(channelSeries.timestamps) ? channelSeries.timestamps : [];
-    const freqs = Array.isArray(channelSeries.frequencies) ? channelSeries.frequencies : [];
-    if (!timestamps.length || !freqs.length) return;
-    const points = [];
-    for (let i = 0; i < timestamps.length; i += 1) {
-      const timestampMs = timestamps[i] * 1000;
-      const ageRatio = (timestampMs - windowStart) / durationMs;
-      if (ageRatio < 0 || ageRatio > 1) continue;
-      const freq = freqs[i];
-      if (!Number.isFinite(freq)) continue;
-      observedMin = Math.min(observedMin, freq);
-      observedMax = Math.max(observedMax, freq);
-      points.push({ timestampMs, freq });
-    }
-    if (points.length) {
-      filteredSeries.set(channelIdx, points);
+function collapseChannelMagnitudes(channels) {
+  if (!Array.isArray(channels) || channels.length === 0) return [];
+  let minLength = Infinity;
+  channels.forEach((row) => {
+    if (Array.isArray(row) && row.length) {
+      minLength = Math.min(minLength, row.length);
     }
   });
-  let minFreq = Number.isFinite(observedMin) ? observedMin : fallbackMin;
-  let maxFreq = Number.isFinite(observedMax) ? observedMax : fallbackMax;
-  if (minFreq === maxFreq) {
-    const padding = minFreq > 0 ? minFreq * 0.05 : 5;
-    minFreq = Math.max(0, minFreq - padding);
-    maxFreq += padding;
-  }
-  const span = Math.max(maxFreq - minFreq, 1);
-  const padding = span * 0.05;
-  minFreq = Math.max(0, minFreq - padding);
-  maxFreq += padding;
-  return { filteredSeries, minFreq, maxFreq };
+  if (!Number.isFinite(minLength) || minLength <= 0) return [];
+  const combined = new Array(minLength).fill(0);
+  channels.forEach((row) => {
+    if (!Array.isArray(row)) return;
+    for (let i = 0; i < minLength; i += 1) {
+      const value = row[i];
+      if (!Number.isFinite(value)) continue;
+      combined[i] = Math.max(combined[i], value);
+    }
+  });
+  return combined;
 }
 
-function drawPeakTimeAxis(ctx, width, height, durationMs) {
+function normalizeSurfaceHistory(surfaceData, windowStart, latestTs) {
+  const frequency = surfaceData && Array.isArray(surfaceData.frequency) ? surfaceData.frequency : [];
+  const rawHistory = surfaceData && Array.isArray(surfaceData.history) ? surfaceData.history : [];
+  const minFreqFallback = Number(minFreqInput.value) || 0;
+  const maxFreqFallback = Number(maxFreqInput.value) || 20000;
+  const entries = [];
+  let maxMagnitude = 0;
+  rawHistory.forEach((entry) => {
+    const timestampMs = (entry.timestamp || 0) * 1000;
+    if (timestampMs < windowStart || timestampMs > latestTs + 5) return;
+    const channels = Array.isArray(entry.channels) ? entry.channels : [];
+    if (!channels.length) return;
+    entries.push({ timestampMs, channels });
+    channels.forEach((channelRow) => {
+      if (!Array.isArray(channelRow)) return;
+      channelRow.forEach((value) => {
+        if (Number.isFinite(value)) {
+          maxMagnitude = Math.max(maxMagnitude, value);
+        }
+      });
+    });
+  });
+  const minFreq = frequency.length ? frequency[0] : minFreqFallback;
+  const maxFreq = frequency.length ? frequency[frequency.length - 1] : maxFreqFallback;
+  if (!Number.isFinite(maxMagnitude) || maxMagnitude <= 0) {
+    maxMagnitude = 1;
+  }
+  return {
+    entries,
+    frequency,
+    minFreq,
+    maxFreq,
+    maxMagnitude,
+  };
+}
+
+function drawSurfaceTimeAxis(ctx, width, height, durationMs) {
   const axisY = height - PLOT_BOTTOM_PADDING + 12;
   const axisWidth = width - 30;
   ctx.strokeStyle = '#475569';
@@ -463,12 +553,12 @@ function drawPeakTimeAxis(ctx, width, height, durationMs) {
     ctx.moveTo(x, axisY - 4);
     ctx.lineTo(x, axisY + 4);
     ctx.stroke();
-    ctx.fillText(label, x - 20, axisY + 18);
+    ctx.fillText(label, x - 24, axisY + 18);
   }
   ctx.fillText('Time history (ago)', width / 2 - 65, axisY + 34);
 }
 
-function drawPeakFrequencyGuide(ctx, width, height, minFreq, maxFreq) {
+function drawSurfaceFrequencyAxis(ctx, width, height, minFreq, maxFreq) {
   const topPadding = 12;
   const usableHeight = height - PLOT_BOTTOM_PADDING;
   ctx.strokeStyle = '#475569';
@@ -512,9 +602,9 @@ function renderFft(fft, channels) {
   drawPlaceholder(fftCanvas, (ctx, width, height) => drawFftPlot(ctx, width, height, fft, channels));
 }
 
-function renderPeakPlot(peakData) {
-  if (!peakCanvas) return;
-  drawPlaceholder(peakCanvas, (ctx, width, height) => drawPeakPlot(ctx, width, height, peakData));
+function renderSurfacePlot(surfaceData) {
+  if (!surfaceCanvas) return;
+  drawPlaceholder(surfaceCanvas, (ctx, width, height) => drawSurfacePlot(ctx, width, height, surfaceData));
 }
 
 function refreshPlots() {
@@ -533,10 +623,10 @@ function refreshPlots() {
   } else {
     renderFft({ frequency: [], magnitude: [] }, liveChannelCount);
   }
-  if (latestPeakPlot) {
-    renderPeakPlot(latestPeakPlot);
+  if (latestSurfacePlot) {
+    renderSurfacePlot(latestSurfacePlot);
   } else {
-    renderPeakPlot({ series: [] });
+    renderSurfacePlot({ history: [], frequency: [] });
   }
 }
 
@@ -554,7 +644,7 @@ function getSelectedChannelIndices(total) {
 function handleFrame(frame) {
   latestSignal = frame.signal;
   latestFft = frame.fft;
-  latestPeakPlot = frame.peak_plot || null;
+  latestSurfacePlot = frame.surface_plot || null;
   latestFrameTimestamp = frame.timestamp ? frame.timestamp * 1000 : Date.now();
   refreshPlots();
 }
@@ -569,7 +659,10 @@ function connectWebSocket() {
   if (safeHost.includes(':') && !safeHost.startsWith('[')) {
     safeHost = `[${safeHost}]`;
   }
-  const hostWithPort = window.location.port ? `${safeHost}:${window.location.port}` : safeHost;
+  const defaultPort = !hostname ? '8000' : '';
+  const hostWithPort = window.location.port
+    ? `${safeHost}:${window.location.port}`
+    : (defaultPort ? `${safeHost}:${defaultPort}` : safeHost);
   const wsUrl = `${protocol}://${hostWithPort}/ws/audio`;
   console.log('[voice-analyzer] connecting websocket', wsUrl);
   socket = new WebSocket(wsUrl);
@@ -618,8 +711,13 @@ function applyConfigToInputs(data) {
   signalMarkerSizeInput.value = vizConfig.signal_marker_size ?? 0;
   fftLineWidthInput.value = vizConfig.fft_line_width ?? 1.2;
   fftMarkerSizeInput.value = vizConfig.fft_marker_size ?? 0;
-  peakPlotWindowInput.value = vizConfig.peak_plot_window_ms ?? 5000;
-  peakBufferSizeInput.value = vizConfig.peak_buffer_size ?? 5;
+  surfacePlotWindowInput.value = vizConfig.peak_plot_window_ms ?? 5000;
+  surfaceFreqBinsInput.value = vizConfig.surface_freq_bins ?? 256;
+  if (surfaceColorProfileInput) {
+    const profileValue = (vizConfig.surface_color_profile || DEFAULT_SURFACE_PROFILE).toLowerCase();
+    const validValues = Array.from(surfaceColorProfileInput.options || []).map((opt) => opt.value);
+    surfaceColorProfileInput.value = validValues.includes(profileValue) ? profileValue : DEFAULT_SURFACE_PROFILE;
+  }
   document.getElementById('sampleRate').value = streamConfig.sample_rate ?? 44100;
   document.getElementById('channels').value = streamConfig.channels ?? 1;
   document.getElementById('sampleWidth').value = streamConfig.sample_width ?? 2;

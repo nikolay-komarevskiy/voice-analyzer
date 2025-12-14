@@ -41,7 +41,8 @@ class VisualizationConfig:
     fft_line_width: float
     fft_marker_size: float
     peak_plot_window_ms: int
-    peak_buffer_size: int
+    surface_freq_bins: int
+    surface_color_profile: str
 
 
 @dataclass
@@ -68,8 +69,13 @@ class Settings:
         return max(0.1, self.visualization.peak_plot_window_ms / 1000.0)
 
     @property
-    def peak_buffer_size(self) -> int:
-        return max(1, self.visualization.peak_buffer_size)
+    def surface_freq_bins(self) -> int:
+        return max(8, self.visualization.surface_freq_bins)
+
+    @property
+    def surface_color_profile(self) -> str:
+        value = (self.visualization.surface_color_profile or "aurora").strip().lower()
+        return value or "aurora"
 
     def merge(self, payload: Dict[str, Any]) -> "Settings":
         data = self.to_dict()
@@ -110,7 +116,8 @@ class Settings:
                 "fft_line_width": self.visualization.fft_line_width,
                 "fft_marker_size": self.visualization.fft_marker_size,
                 "peak_plot_window_ms": self.visualization.peak_plot_window_ms,
-                "peak_buffer_size": self.visualization.peak_buffer_size,
+                "surface_freq_bins": self.visualization.surface_freq_bins,
+                "surface_color_profile": self.visualization.surface_color_profile,
             },
         }
 
@@ -148,7 +155,8 @@ class Settings:
                 fft_line_width=float(visualization.get("fft_line_width", 1.2)),
                 fft_marker_size=float(visualization.get("fft_marker_size", 0.0)),
                 peak_plot_window_ms=int(visualization.get("peak_plot_window_ms", 5000)),
-                peak_buffer_size=int(visualization.get("peak_buffer_size", 5)),
+                surface_freq_bins=int(visualization.get("surface_freq_bins", 256)),
+                surface_color_profile=str(visualization.get("surface_color_profile", "aurora")),
             ),
         )
 
