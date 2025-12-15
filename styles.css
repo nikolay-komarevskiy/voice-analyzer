@@ -145,6 +145,14 @@ canvas {
   border: 1px dashed rgba(148, 163, 184, 0.25);
 }
 
+#fftCanvas {
+  height: 330px;
+}
+
+#surfaceCanvas {
+  height: 440px;
+}
+
 .plot-meta {
   margin-top: 0.4rem;
   font-size: 0.8rem;
