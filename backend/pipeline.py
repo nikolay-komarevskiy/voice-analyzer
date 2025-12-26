@@ -18,7 +18,7 @@ class AudioStreamManager:
     def __init__(self, settings: Settings):
         self.settings = settings
         self._backend: Optional[AudioBackend] = None
-        self._queue: asyncio.Queue[np.ndarray] = asyncio.Queue(maxsize=8)
+        self._queue: asyncio.Queue[np.ndarray] = self._create_queue()
         self._loop: Optional[asyncio.AbstractEventLoop] = None
 
     async def start(self) -> None:
@@ -57,6 +57,7 @@ class AudioStreamManager:
     async def restart(self, settings: Settings) -> None:
         await self.stop()
         self.settings = settings
+        self._queue = self._create_queue()
         await self.start()
 
     def _handle_chunk(self, chunk: np.ndarray) -> None:
@@ -78,6 +79,10 @@ class AudioStreamManager:
 
     async def next_chunk(self) -> np.ndarray:
         return await self._queue.get()
+
+    def _create_queue(self) -> asyncio.Queue[np.ndarray]:
+        maxsize = max(1, int(self.settings.stream.queue_maxsize))
+        return asyncio.Queue(maxsize=maxsize)
 
 
 class RollingBuffer:

@@ -15,6 +15,7 @@ class StreamConfig:
     frames_per_chunk: int
     input_device: str | None
     preamp_gain: float
+    queue_maxsize: int
 
 
 @dataclass
@@ -97,14 +98,15 @@ class Settings:
                 "sample_rate": self.stream.sample_rate,
                 "channels": self.stream.channels,
                 "sample_width": self.stream.sample_width,
-                "frames_per_chunk": self.stream.frames_per_chunk,
-                "input_device": self.stream.input_device,
-                "preamp_gain": self.stream.preamp_gain,
-            },
-            "fft": {
-                "time_window_ms": self.fft.time_window_ms,
-                "size": self.fft.size,
-                "window_func": self.fft.window_func,
+            "frames_per_chunk": self.stream.frames_per_chunk,
+            "input_device": self.stream.input_device,
+            "preamp_gain": self.stream.preamp_gain,
+            "queue_maxsize": self.stream.queue_maxsize,
+        },
+        "fft": {
+            "time_window_ms": self.fft.time_window_ms,
+            "size": self.fft.size,
+            "window_func": self.fft.window_func,
                 "min_frequency": self.fft.min_frequency,
                 "max_frequency": self.fft.max_frequency,
                 "smoothing": self.fft.smoothing,
@@ -139,6 +141,7 @@ class Settings:
                 frames_per_chunk=int(stream.get("frames_per_chunk", 1024)),
                 input_device=stream.get("input_device"),
                 preamp_gain=float(stream.get("preamp_gain", 1.0)),
+                queue_maxsize=max(1, int(stream.get("queue_maxsize", 8))),
             ),
             fft=FftConfig(
                 time_window_ms=int(fft.get("time_window_ms", 1000)),

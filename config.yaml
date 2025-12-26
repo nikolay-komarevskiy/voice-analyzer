@@ -8,6 +8,7 @@ stream:
   frames_per_chunk: 1024  # Frames pulled from the audio library per callback
   input_device: null  # Optional device index (in case of multiple mics) or name (null = default)
   preamp_gain: 1.0  # Linear gain applied before processing (1.0 = unity)
+  queue_maxsize: 8  # Max audio chunks kept in the async queue before dropping the oldest
 fft:
   time_window_ms: 200  # Time window with accumulated signal used for FFT computation
   size: 8192  # FFT size in samples (prefer powers of two like 2048/4096/8192/16384)
