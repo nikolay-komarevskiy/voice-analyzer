@@ -1,0 +1,45 @@
+# Default configuration for Voice Analyzer
+audio_input:
+  sample_rate: 48000
+  channels: 1
+  frames_per_chunk: 1024
+  sample_width_bytes: 2
+  input_source: mic
+  synthetic:
+    frequencies: [220, 440, 880]
+  gain: 0.0
+
+plot_font_size: 25
+ui_param_font_size: 18
+
+figure1:
+  time_window_ms: 1000
+  max_points: 1200
+  refresh_interval_ms: 30
+  max_amplitude: 1.0
+  line_width: 1.0
+  marker_size: 0.0
+
+figure2:
+  time_window_ms: 200
+  size: 65536
+  window_func: rect
+  scale: linear
+  min_frequency: 20
+  max_frequency: 4000
+  smoothing: 0.0
+  refresh_interval_ms: 30
+  line_width: 1.0
+  marker_size: 0.0
+
+figure3:
+  displayed_time_window_ms: 5000
+  fft_time_segment_ms: 200
+  fft_size: 16384
+  time_bins: 200
+  refresh_interval_ms: 30
+  frequency_bins: 200
+  min_frequency: 0
+  max_frequency: 4000
+  colormap: inferno
+  interpolation_type: quadratic

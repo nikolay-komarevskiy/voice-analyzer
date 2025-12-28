@@ -16,6 +16,8 @@ const fftLineWidthInput = document.getElementById('fftLineWidth');
 const fftMarkerSizeInput = document.getElementById('fftMarkerSize');
 const surfacePlotWindowInput = document.getElementById('surfacePlotWindow');
 const surfaceFreqBinsInput = document.getElementById('surfaceFreqBins');
+const surfaceTimeBinsInput = document.getElementById('surfaceTimeBins');
+const surfacePublishIntervalInput = document.getElementById('surfacePublishInterval');
 const surfaceCanvas = document.getElementById('surfaceCanvas');
 const surfaceColorProfileInput = document.getElementById('surfaceColorProfile');
 
@@ -26,8 +28,13 @@ let reconnectTimer;
 let latestSignal = null;
 let latestFft = null;
 let hasHydrated = false;
-let latestSurfacePlot = null;
 let latestFrameTimestamp = Date.now();
+let surfaceFrames = [];
+let surfaceGrid = { history: [], frequency: [] };
+let surfacePublishTimer = null;
+let refreshQueued = false;
+let surfaceBuildInFlight = false;
+let surfaceConfigTimer = null;
 const PLOT_BOTTOM_PADDING = 50;
 const CHANNEL_COLORS = ['#38bdf8', '#a78bfa', '#34d399', '#f97316', '#f472b6', '#facc15', '#f87171', '#0ea5e9'];
 const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
@@ -177,10 +184,23 @@ signalLineWidthInput.addEventListener('input', refreshPlots);
 signalMarkerSizeInput.addEventListener('input', refreshPlots);
 fftLineWidthInput.addEventListener('input', refreshPlots);
 fftMarkerSizeInput.addEventListener('input', refreshPlots);
-surfacePlotWindowInput.addEventListener('input', refreshPlots);
-surfaceFreqBinsInput.addEventListener('input', refreshPlots);
+const scheduleSurfaceConfigApply = () => {
+  if (surfaceConfigTimer) {
+    clearTimeout(surfaceConfigTimer);
+  }
+  surfaceConfigTimer = setTimeout(() => {
+    surfaceConfigTimer = null;
+    trimSurfaceFrames();
+    restartSurfacePublish();
+    queueRefresh();
+  }, 120);
+};
+surfacePlotWindowInput.addEventListener('input', scheduleSurfaceConfigApply);
+surfaceFreqBinsInput.addEventListener('input', scheduleSurfaceConfigApply);
+surfaceTimeBinsInput.addEventListener('input', scheduleSurfaceConfigApply);
+surfacePublishIntervalInput.addEventListener('input', scheduleSurfaceConfigApply);
 if (surfaceColorProfileInput) {
-  surfaceColorProfileInput.addEventListener('input', refreshPlots);
+    surfaceColorProfileInput.addEventListener('input', scheduleSurfaceConfigApply);
 }
 
 if (vocalHelp) {
@@ -257,6 +277,8 @@ function collectFormData() {
       peak_plot_window_ms: Number(surfacePlotWindowInput.value),
       surface_freq_bins: Number(surfaceFreqBinsInput.value),
       surface_color_profile: (surfaceColorProfileInput && surfaceColorProfileInput.value) || DEFAULT_SURFACE_PROFILE,
+      surface_publish_interval_ms: Number(surfacePublishIntervalInput.value),
+      surface_time_bins: Number(surfaceTimeBinsInput.value),
     },
     visualizationChannels: Array.from(selectedChannels),
   };
@@ -434,14 +456,13 @@ function drawSurfacePlot(ctx, width, height, surfaceData) {
   const axisTop = 12;
   const axisHeight = usableHeight - axisTop;
   const columnWidth = history.entries.length
-    ? Math.max(2, axisWidth / (history.entries.length * 1.5))
+    ? Math.max(2, axisWidth / Math.max(1, history.entries.length))
     : axisWidth;
   const palette = getSurfacePalette();
 
-  history.entries.forEach((entry) => {
-    const ageRatio = (entry.timestampMs - windowStart) / durationMs;
-    if (ageRatio < 0 || ageRatio > 1) return;
-    const x = 20 + ageRatio * axisWidth - columnWidth / 2;
+  history.entries.forEach((entry, idx) => {
+    if (idx < 0 || idx >= history.entries.length) return;
+    const x = 20 + (idx / Math.max(1, history.entries.length - 1)) * axisWidth - columnWidth / 2;
     const magnitudes = collapseChannelMagnitudes(entry.channels);
     if (!magnitudes.length) return;
     for (let i = 0; i < magnitudes.length; i += 1) {
@@ -503,11 +524,11 @@ function normalizeSurfaceHistory(surfaceData, windowStart, latestTs) {
   const maxFreqFallback = Number(maxFreqInput.value) || 20000;
   const entries = [];
   let maxMagnitude = 0;
-  rawHistory.forEach((entry) => {
-    const timestampMs = (entry.timestamp || 0) * 1000;
-    if (timestampMs < windowStart || timestampMs > latestTs + 5) return;
+  rawHistory.forEach((entry, idx) => {
     const channels = Array.isArray(entry.channels) ? entry.channels : [];
     if (!channels.length) return;
+    // preserve arrival order; assign a synthetic timestamp for compatibility
+    const timestampMs = (entry.timestamp !== undefined ? entry.timestamp * 1000 : idx);
     entries.push({ timestampMs, channels });
     channels.forEach((channelRow) => {
       if (!Array.isArray(channelRow)) return;
@@ -524,12 +545,115 @@ function normalizeSurfaceHistory(surfaceData, windowStart, latestTs) {
     maxMagnitude = 1;
   }
   return {
-    entries,
+    entries: entries.sort((a, b) => a.timestampMs - b.timestampMs),
     frequency,
     minFreq,
     maxFreq,
     maxMagnitude,
   };
+}
+
+function appendSurfaceFrame(frame) {
+  const fft = frame.fft || {};
+  const frequency = Array.isArray(fft.frequency) ? fft.frequency : [];
+  const magnitude = Array.isArray(fft.magnitude) ? fft.magnitude : [];
+  if (!frequency.length || !magnitude.length) return;
+  const channelCount = (frame.signal && frame.signal.channels) || liveChannelCount;
+  surfaceFrames.push({ frequency, magnitude, channelCount });
+  trimSurfaceFrames();
+}
+
+function trimSurfaceFrames() {
+  const timeBinsValue = Number(surfaceTimeBinsInput.value);
+  const timeBins = Number.isFinite(timeBinsValue) ? Math.max(8, timeBinsValue) : 120;
+  const maxFrames = Math.max(timeBins * 2, timeBins + 16);
+  if (surfaceFrames.length > maxFrames) {
+    surfaceFrames = surfaceFrames.slice(-maxFrames);
+  }
+}
+
+function buildSurfaceGrid() {
+  const windowMsValue = Number(surfacePlotWindowInput.value);
+  const windowMs = Number.isFinite(windowMsValue) ? Math.max(200, windowMsValue) : 5000;
+  const freqBinsValue = Number(surfaceFreqBinsInput.value);
+  const freqBins = Number.isFinite(freqBinsValue) ? Math.max(8, freqBinsValue) : 256;
+  const timeBinsValue = Number(surfaceTimeBinsInput.value);
+  const timeBins = Number.isFinite(timeBinsValue) ? Math.max(8, timeBinsValue) : 120;
+  const minFreq = Number(minFreqInput.value) || 0;
+  const maxFreq = Math.max(minFreq + 1, Number(maxFreqInput.value) || minFreq + 1);
+  trimSurfaceFrames();
+  const sortedFrames = [...surfaceFrames];
+  const targetFreqs = buildSurfaceFrequencyAxis(minFreq, maxFreq, freqBins);
+  const channelCount = resolveSurfaceChannelCount(sortedFrames);
+  const emptyChannels = createEmptyChannels(channelCount, targetFreqs.length);
+  if (!sortedFrames.length) {
+    return { history: [], frequency: targetFreqs };
+  }
+  const entries = [];
+  const frameCount = sortedFrames.length;
+  for (let i = 0; i < timeBins; i += 1) {
+    const relative = timeBins <= 1 ? 0 : i / (timeBins - 1);
+    const framePos = relative * (frameCount - 1);
+    const frameIdx = Math.round(framePos);
+    const frame = sortedFrames[Math.max(0, Math.min(frameIdx, frameCount - 1))];
+    const resampled = resampleFrameChannels(frame, targetFreqs, minFreq, maxFreq, channelCount);
+    const syntheticTimestamp = (relative * windowMs) / 1000;
+    entries.push({ timestamp: syntheticTimestamp, channels: resampled });
+  }
+  return { history: entries, frequency: targetFreqs };
+}
+
+function resolveSurfaceChannelCount(frames) {
+  if (frames.length) {
+    const value = frames[frames.length - 1].channelCount;
+    if (Number.isFinite(value) && value > 0) {
+      return value;
+    }
+  }
+  return liveChannelCount;
+}
+
+function createEmptyChannels(count, bins) {
+  return Array.from({ length: count }, () => new Array(bins).fill(0));
+}
+
+function buildSurfaceFrequencyAxis(minFreq, maxFreq, bins) {
+  const safeBins = Math.max(2, bins);
+  const span = Math.max(1, maxFreq - minFreq);
+  return Array.from({ length: safeBins }, (_, i) => minFreq + (i / (safeBins - 1)) * span);
+}
+
+function resampleFrameChannels(frame, targetFreqs, minFreq, maxFreq, channelCount) {
+  const channels = [];
+  for (let c = 0; c < channelCount; c += 1) {
+    channels.push(targetFreqs.map((freq) => interpolateMagnitude(frame.frequency, frame.magnitude, c, freq, minFreq, maxFreq)));
+  }
+  return channels;
+}
+
+function interpolateMagnitude(freqs, magnitudes, channelIdx, targetFreq, minFreq, maxFreq) {
+  if (!Array.isArray(freqs) || !freqs.length) return 0;
+  const clamped = Math.min(maxFreq, Math.max(minFreq, targetFreq));
+  const magAt = (idx) => {
+    const row = magnitudes[idx];
+    if (!row || row[channelIdx] === undefined) return 0;
+    const value = row[channelIdx];
+    return Number.isFinite(value) ? value : 0;
+  };
+  if (clamped <= freqs[0]) return magAt(0);
+  if (clamped >= freqs[freqs.length - 1]) return magAt(freqs.length - 1);
+  let left = 0;
+  let right = freqs.length - 1;
+  while (right - left > 1) {
+    const mid = Math.floor((left + right) / 2);
+    const value = freqs[mid];
+    if (value === clamped) return magAt(mid);
+    if (value < clamped) left = mid;
+    else right = mid;
+  }
+  const span = Math.max(1e-6, freqs[right] - freqs[left]);
+  const weight = (clamped - freqs[left]) / span;
+  return magAt(left) * (1 - weight) + magAt(right) * weight;
 }
 
 function drawSurfaceTimeAxis(ctx, width, height, durationMs) {
@@ -607,7 +731,34 @@ function renderSurfacePlot(surfaceData) {
   drawPlaceholder(surfaceCanvas, (ctx, width, height) => drawSurfacePlot(ctx, width, height, surfaceData));
 }
 
+function buildAndRenderSurface() {
+  if (surfaceBuildInFlight) return;
+  surfaceBuildInFlight = true;
+  try {
+    surfaceGrid = buildSurfaceGrid();
+    renderSurfacePlot(surfaceGrid);
+    queueRefresh();
+  } finally {
+    surfaceBuildInFlight = false;
+  }
+}
+
+function restartSurfacePublish() {
+  stopSurfacePublish();
+  const interval = Math.max(30, Number(surfacePublishIntervalInput.value) || 150);
+  surfacePublishTimer = setInterval(buildAndRenderSurface, interval);
+  buildAndRenderSurface();
+}
+
+function stopSurfacePublish() {
+  if (surfacePublishTimer) {
+    clearInterval(surfacePublishTimer);
+    surfacePublishTimer = null;
+  }
+}
+
 function refreshPlots() {
+  refreshQueued = false;
   if (latestSignal) {
     renderSignal(latestSignal);
   } else {
@@ -623,11 +774,7 @@ function refreshPlots() {
   } else {
     renderFft({ frequency: [], magnitude: [] }, liveChannelCount);
   }
-  if (latestSurfacePlot) {
-    renderSurfacePlot(latestSurfacePlot);
-  } else {
-    renderSurfacePlot({ history: [], frequency: [] });
-  }
+  renderSurfacePlot(surfaceGrid);
 }
 
 function getSelectedChannelIndices(total) {
@@ -644,9 +791,16 @@ function getSelectedChannelIndices(total) {
 function handleFrame(frame) {
   latestSignal = frame.signal;
   latestFft = frame.fft;
-  latestSurfacePlot = frame.surface_plot || null;
   latestFrameTimestamp = frame.timestamp ? frame.timestamp * 1000 : Date.now();
-  refreshPlots();
+  try {
+    appendSurfaceFrame(frame);
+    if (!surfacePublishTimer) {
+      surfaceGrid = buildSurfaceGrid();
+    }
+  } catch (err) {
+    console.error('[voice-analyzer] failed to append surface frame', err);
+  }
+  queueRefresh();
 }
 
 function connectWebSocket() {
@@ -736,9 +890,14 @@ function applyConfigToInputs(data) {
   minFreqInput.value = fftConfig.min_frequency ?? 20;
   maxFreqInput.value = fftConfig.max_frequency ?? 20000;
   document.getElementById('smoothing').value = fftConfig.smoothing ?? 0;
+  surfacePublishIntervalInput.value = vizConfig.surface_publish_interval_ms ?? 150;
+  surfaceTimeBinsInput.value = vizConfig.surface_time_bins ?? 120;
   const shouldAutoFill = !hasHydrated;
   buildChannelTags(streamConfig.channels, shouldAutoFill);
+  surfaceFrames = [];
+  surfaceGrid = { history: [], frequency: [] };
   refreshPlots();
+  restartSurfacePublish();
   hasHydrated = true;
 }
 
@@ -750,8 +909,15 @@ hydrateConfig().catch((err) => {
   console.warn('Unable to load backend config', err);
 }).finally(() => {
   connectWebSocket();
+  restartSurfacePublish();
   setStatus('Ready to configure live stream.');
 });
+
+function queueRefresh() {
+  if (refreshQueued) return;
+  refreshQueued = true;
+  requestAnimationFrame(refreshPlots);
+}
 
 function updateFftPeakInfo(freqs, magnitude, indices) {
   const infoEl = document.getElementById('fftPeakInfo');

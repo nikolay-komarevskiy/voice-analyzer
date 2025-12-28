@@ -125,6 +125,14 @@
           <input type="number" id="surfaceFreqBins" value="256" min="32" max="2048" step="32" />
         </div>
         <div class="field-group">
+          <label for="surfaceTimeBins" title="Number of time slices used to render the surface history; gaps are filled with the most recent FFT.">Surface Time Bins</label>
+          <input type="number" id="surfaceTimeBins" value="120" min="16" max="600" step="8" />
+        </div>
+        <div class="field-group">
+          <label for="surfacePublishInterval" title="How often the client repaints the surface plot.">Surface Publish Interval (ms)</label>
+          <input type="number" id="surfacePublishInterval" value="150" min="30" max="1000" step="10" />
+        </div>
+        <div class="field-group">
           <label for="surfaceColorProfile" title="Pick the palette used to color the Figure 3 heatmap.">Surface Color Profile</label>
           <select id="surfaceColorProfile">
             <option value="aurora">Aurora (teal → violet)</option>

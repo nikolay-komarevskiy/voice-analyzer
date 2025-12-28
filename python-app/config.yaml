@@ -25,3 +25,5 @@ visualization:
   peak_plot_window_ms: 6000  # Time window for the running frequency surface
   surface_freq_bins: 256  # Number of frequency bins kept per frame for the running surface
   surface_color_profile: aurora  # Heatmap palette for Figure 3 (aurora, inferno, ice)
+  surface_publish_interval_ms: 150  # How often the client repaints the surface plot
+  surface_time_bins: 120  # Number of time slices used to render the surface (interpolated)

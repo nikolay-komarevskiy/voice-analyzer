@@ -44,6 +44,8 @@ class VisualizationConfig:
     peak_plot_window_ms: int
     surface_freq_bins: int
     surface_color_profile: str
+    surface_publish_interval_ms: int
+    surface_time_bins: int
 
 
 @dataclass
@@ -115,13 +117,15 @@ class Settings:
                 "max_signal_points": self.visualization.max_signal_points,
                 "signal_line_width": self.visualization.signal_line_width,
                 "signal_marker_size": self.visualization.signal_marker_size,
-                "fft_line_width": self.visualization.fft_line_width,
-                "fft_marker_size": self.visualization.fft_marker_size,
-                "peak_plot_window_ms": self.visualization.peak_plot_window_ms,
-                "surface_freq_bins": self.visualization.surface_freq_bins,
-                "surface_color_profile": self.visualization.surface_color_profile,
-            },
-        }
+            "fft_line_width": self.visualization.fft_line_width,
+            "fft_marker_size": self.visualization.fft_marker_size,
+            "peak_plot_window_ms": self.visualization.peak_plot_window_ms,
+            "surface_freq_bins": self.visualization.surface_freq_bins,
+            "surface_color_profile": self.visualization.surface_color_profile,
+            "surface_publish_interval_ms": self.visualization.surface_publish_interval_ms,
+            "surface_time_bins": self.visualization.surface_time_bins,
+        },
+    }
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Settings":
@@ -160,6 +164,8 @@ class Settings:
                 peak_plot_window_ms=int(visualization.get("peak_plot_window_ms", 5000)),
                 surface_freq_bins=int(visualization.get("surface_freq_bins", 256)),
                 surface_color_profile=str(visualization.get("surface_color_profile", "aurora")),
+                surface_publish_interval_ms=max(10, int(visualization.get("surface_publish_interval_ms", 120))),
+                surface_time_bins=max(8, int(visualization.get("surface_time_bins", 120))),
             ),
         )
 

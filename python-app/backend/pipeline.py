@@ -295,11 +295,6 @@ class AudioBroadcaster:
         self.settings = settings
         self.buffer = RollingBuffer(settings.time_window_samples, settings.stream.channels)
         self.fft_processor = FftProcessor(settings)
-        self.surface_tracker = SpectrumSurface(
-            settings.peak_plot_window_seconds,
-            settings.stream.channels,
-            settings.surface_freq_bins,
-        )
         self.hub = BroadcastHub()
         self.refresh_interval = settings.refresh_interval_seconds
         self._ingest_task: Optional[asyncio.Task] = None
@@ -329,11 +324,6 @@ class AudioBroadcaster:
         self.settings = settings
         self.buffer.resize(settings.time_window_samples, settings.stream.channels)
         self.fft_processor.update(settings)
-        self.surface_tracker.resize(
-            settings.stream.channels,
-            window_seconds=settings.peak_plot_window_seconds,
-            freq_point_limit=settings.surface_freq_bins,
-        )
         self.refresh_interval = settings.refresh_interval_seconds
 
     async def stream(self):
@@ -367,7 +357,6 @@ class AudioBroadcaster:
         timestamp = time.time()
         freq, spectrum, _, _ = self.fft_processor.process(samples)
         latest = downsample(samples, self.settings.signal_point_limit)
-        surface_plot = self.surface_tracker.update(freq, spectrum, timestamp)
         message = {
             "timestamp": timestamp,
             "signal": {
@@ -379,6 +368,5 @@ class AudioBroadcaster:
                 "frequency": freq.tolist(),
                 "magnitude": spectrum.tolist(),
             },
-            "surface_plot": surface_plot,
         }
         await self.hub.publish(message)
